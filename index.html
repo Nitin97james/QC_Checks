@@ -17,20 +17,21 @@
 </style>
 </head>
 <body>
-<div id="app">
-  <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;gap:14px">
-    <div style="font-size:32px">🏭</div>
-    <div style="color:#64748b;font-size:15px">Connecting to database…</div>
-  </div>
-</div>
+<div id="app"></div>
+
 <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-database-compat.js"></script>
 <script>
-firebase.initializeApp({
-  apiKey:"AIzaSyBHtoHnyGhYZmTkAnmS328lm6udcYGHIYU",
-  databaseURL:"https://warehouse-checks-default-rtdb.firebaseio.com",
-});
-const db=firebase.database();
+// ── Firebase ──────────────────────────────────────────────────
+let db = null, firebaseReady = false;
+try {
+  firebase.initializeApp({
+    apiKey:"AIzaSyBHtoHnyGhYZmTkAnmS328lm6udcYGHIYU",
+    databaseURL:"https://warehouse-checks-default-rtdb.firebaseio.com",
+  });
+  db = firebase.database();
+  firebaseReady = true;
+} catch(e) { console.warn("Firebase init failed", e); }
 
 // ── config ────────────────────────────────────────────────────
 const SITES=["Fuji","Koi","Bonsai","Yuzu"];
@@ -46,8 +47,6 @@ const CHECK_CFG={
   temp:   {label:"Temperature"},
   shutter:{label:"Shutter door"},
 };
-
-// Shutter door: all sites 4am–10am hourly
 const SHUTTER=[4,5,6,7,8,9,10];
 const SCH={
   Fuji:{
@@ -73,22 +72,19 @@ const SCH={
   },
 };
 
-// ── status colours ────────────────────────────────────────────
-// done (on time)  = green
-// overdue (logged after window) = orange
-// missed (never logged, window passed) = red
-// due (within window) = yellow
-// upcoming = gray
 const STATUS_STYLE={
-  done:    {bg:"#dcfce7",c:"#166534",rowBg:"#ffffff",  rowBdr:"#e2e8f0",  label:"Done"},
-  overdue: {bg:"#ffedd5",c:"#c2410c",rowBg:"#fff7ed",  rowBdr:"#fed7aa",  label:"Overdue"},
-  missed:  {bg:"#fee2e2",c:"#991b1b",rowBg:"#fff1f2",  rowBdr:"#fecdd3",  label:"Missed"},
-  due:     {bg:"#fef9c3",c:"#854d0e",rowBg:"#fffbeb",  rowBdr:"#fde68a",  label:"Due now"},
-  upcoming:{bg:"#f1f5f9",c:"#64748b",rowBg:"#ffffff",  rowBdr:"#e2e8f0",  label:"Upcoming"},
+  done:    {bg:"#dcfce7",c:"#166534",rowBg:"#ffffff",rowBdr:"#e2e8f0",label:"Done"},
+  overdue: {bg:"#ffedd5",c:"#c2410c",rowBg:"#fff7ed",rowBdr:"#fed7aa",label:"Overdue"},
+  missed:  {bg:"#fee2e2",c:"#991b1b",rowBg:"#fff1f2",rowBdr:"#fecdd3",label:"Missed"},
+  due:     {bg:"#fef9c3",c:"#854d0e",rowBg:"#fffbeb",rowBdr:"#fde68a",label:"Due now"},
+  upcoming:{bg:"#f1f5f9",c:"#64748b",rowBg:"#ffffff",rowBdr:"#e2e8f0",label:"Upcoming"},
 };
 
 // ── helpers ──────────────────────────────────────────────────
-const dstr=(d=new Date())=>d.toISOString().split("T")[0];
+const dstr=(d=new Date())=>{
+  // Use local date string to avoid UTC offset issues
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+};
 const fmtH=h=>h===0?"12:00 AM":h<12?`${h}:00 AM`:h===12?"12:00 PM":`${h-12}:00 PM`;
 const p2=n=>String(n).padStart(2,"0");
 const ckKey=(ds,site,type,hr)=>`${ds}||${site}||${type}||${p2(hr)}`;
@@ -100,62 +96,80 @@ function loadNotified(){try{const r=localStorage.getItem("wh_notified_"+dstr());
 function saveNotified(s){try{localStorage.setItem("wh_notified_"+dstr(),JSON.stringify([...s]));}catch{}}
 
 // ── state ─────────────────────────────────────────────────────
-let now=new Date(),tab="overview",checks={},loading=true,connected=false,
-    modal=null,nameInput="",lastName=loadLastName(),toasts=[],
+let now=new Date(), tab="overview", checks={}, dbConnected=false,
+    modal=null, nameInput="", lastName=loadLastName(), toasts=[],
     notifPerm=typeof Notification!=="undefined"?Notification.permission:"denied",
-    historyDay=null;
+    historyDay=null, dbStatus="connecting"; // connecting | online | offline | disabled
 const notified=loadNotified();
 
-// ── Firebase ──────────────────────────────────────────────────
-db.ref(".info/connected").on("value",snap=>{connected=snap.val()===true;if(!loading)render();});
-const cutoff=new Date();cutoff.setDate(cutoff.getDate()-8);
-db.ref("checks").on("value",snapshot=>{
-  const data=snapshot.val()||{};
-  checks={};
-  for(const[ds,sites]of Object.entries(data)){
-    if(new Date(ds)<cutoff)continue;
-    for(const[site,types]of Object.entries(sites))
-      for(const[type,hours]of Object.entries(types))
-        for(const[hrKey,entry]of Object.entries(hours))
-          checks[ckKey(ds,site,type,parseInt(hrKey.replace("h","")))] = entry;
-  }
-  loading=false;render();
-});
+// ── Firebase listeners ────────────────────────────────────────
+if(firebaseReady && db){
+  // Timeout: if no connection after 6 seconds, show app anyway
+  const connTimeout = setTimeout(()=>{
+    if(dbStatus==="connecting"){
+      dbStatus="offline";
+      render();
+    }
+  }, 6000);
 
-// ── status logic ──────────────────────────────────────────────
-// Window: due starts 10 mins BEFORE, closes 15 mins AFTER check time
-// Before window: upcoming
-// Within window, not logged: due
-// After window, not logged: missed
-// Logged within window (≤15 mins late): done
-// Logged after window (>15 mins late): overdue
+  db.ref(".info/connected").on("value", snap=>{
+    if(snap.val()===true){
+      dbConnected=true;
+      dbStatus="online";
+      clearTimeout(connTimeout);
+    } else {
+      dbConnected=false;
+      if(dbStatus==="online") dbStatus="offline";
+    }
+    render();
+  });
+
+  const cutoff=new Date();cutoff.setDate(cutoff.getDate()-8);
+  db.ref("checks").on("value", snapshot=>{
+    const data=snapshot.val()||{};
+    checks={};
+    for(const[ds,sites]of Object.entries(data)){
+      // cutoff check using string comparison (YYYY-MM-DD format works)
+      if(ds < dstr(cutoff)) continue;
+      for(const[site,types]of Object.entries(sites))
+        for(const[type,hours]of Object.entries(types))
+          for(const[hrKey,entry]of Object.entries(hours))
+            checks[ckKey(ds,site,type,parseInt(hrKey.replace("h","")))] = entry;
+    }
+    dbStatus="online";
+    render();
+  }, err=>{
+    console.warn("DB read error:", err);
+    dbStatus="offline";
+    render();
+  });
+} else {
+  dbStatus="disabled";
+}
+
+// Render immediately (empty state) — don't wait for Firebase
+render();
+
+// ── status ────────────────────────────────────────────────────
 function getStatus(site,type,hr,ds){
   const key=ckKey(ds,site,type,hr);
   const entry=checks[key];
   const isToday=ds===dstr(now);
-
   if(entry){
-    // Determine if logged on time or late
     const logTime=new Date(entry.loggedAt);
     const logMins=logTime.getHours()*60+logTime.getMinutes();
-    const schedMins=hr*60;
-    const minsLate=logMins-schedMins;
-    // If logged more than 15 mins after scheduled → overdue
-    return minsLate>15 ? {s:"overdue",entry} : {s:"done",entry};
+    const minsLate=logMins-hr*60;
+    return minsLate>15?{s:"overdue",entry}:{s:"done",entry};
   }
-
   if(isToday){
-    const nm=now.getHours()*60+now.getMinutes();
-    const diff=nm-hr*60;
+    const diff=now.getHours()*60+now.getMinutes()-hr*60;
     if(diff>15)  return{s:"missed",entry:null};
     if(diff>=-10)return{s:"due",   entry:null};
     return{s:"upcoming",entry:null};
   }
-  // Past day, not logged
   return{s:"missed",entry:null};
 }
 
-// ── stats ─────────────────────────────────────────────────────
 function getStats(site=null,ds=dstr(now)){
   const sites=site?[site]:SITES;
   let done=0,overdue=0,missed=0,due=0,upcoming=0,total=0;
@@ -171,16 +185,15 @@ function getStats(site=null,ds=dstr(now)){
   return{done,overdue,missed,due,upcoming,total};
 }
 
-// ── badge ─────────────────────────────────────────────────────
 function badge(s){
   const m=STATUS_STYLE[s]||STATUS_STYLE.upcoming;
   return `<span style="font-size:11px;font-weight:600;padding:2px 9px;border-radius:20px;white-space:nowrap;background:${m.bg};color:${m.c}">${m.label}</span>`;
 }
 
-// ── check type row ────────────────────────────────────────────
 function buildTypeRow(site,type,hr,ds){
   const{s,entry}=getStatus(site,type,hr,ds);
-  const isToday=ds===dstr(now),canLog=isToday&&s!=="done"&&s!=="overdue";
+  const isToday=ds===dstr(now);
+  const canLog=isToday&&s!=="done";
   const m=STATUS_STYLE[s]||STATUS_STYLE.upcoming;
   let sub="";
   if(entry){
@@ -188,17 +201,14 @@ function buildTypeRow(site,type,hr,ds){
     sub=`<div style="font-size:12px;color:#64748b;margin-top:2px">By ${entry.name} · ${t}${s==="overdue"?' <span style="color:#c2410c">(logged late)</span>':''}</div>`;
   } else if(s==="missed"){
     sub=`<div style="font-size:12px;color:#991b1b;margin-top:2px">Not completed</div>`;
-  } else if(s==="overdue"){
-    sub=`<div style="font-size:12px;color:#c2410c;margin-top:2px">Tap to log (will show as overdue)</div>`;
   } else if(s==="due"){
     sub=`<div style="font-size:12px;color:#ca8a04;margin-top:2px">Tap to log now</div>`;
   }
-  // Allow logging even when "missed" (will register as overdue since >15 mins past)
-  const logAttr=(isToday&&s!=="done")?`data-log="${site}||${type}||${hr}||${ds}"`:"";
+  const logAttr=canLog?`data-log="${site}||${type}||${hr}||${ds}"`:"";
   return `<div ${logAttr}
     style="display:flex;align-items:center;gap:10px;padding:10px 13px;border-radius:10px;
     border:1px solid ${m.rowBdr};background:${m.rowBg};
-    cursor:${(isToday&&s!=="done")?"pointer":"default"};margin-bottom:6px">
+    cursor:${canLog?"pointer":"default"};margin-bottom:6px">
     <div style="flex:1">
       <div style="font-weight:${s==="done"?"400":"500"};font-size:14px;
         color:${s==="done"?"#94a3b8":"#1e293b"}">${CHECK_CFG[type].label}</div>
@@ -207,7 +217,6 @@ function buildTypeRow(site,type,hr,ds){
     ${badge(s)}</div>`;
 }
 
-// ── time-grouped blocks (reused by site + history detail) ─────
 function buildTimeBlocks(site,ds){
   const allHours=new Set();
   Object.values(SCH[site]).forEach(hrs=>hrs.forEach(h=>allHours.add(h)));
@@ -217,11 +226,8 @@ function buildTimeBlocks(site,ds){
     const typesAtHour=Object.keys(SCH[site]).filter(type=>SCH[site][type].includes(hr));
     if(!typesAtHour.length)return;
     const statuses=typesAtHour.map(type=>getStatus(site,type,hr,ds).s);
-    const hasMissed=statuses.includes("missed"),
-          hasOverdue=statuses.includes("overdue"),
-          hasDue=statuses.includes("due"),
-          allDone=statuses.every(s=>s==="done");
-    // Priority: missed > overdue > due > all done > upcoming
+    const hasMissed=statuses.includes("missed"),hasOverdue=statuses.includes("overdue"),
+          hasDue=statuses.includes("due"),allDone=statuses.every(s=>s==="done");
     const hStyle=hasMissed?STATUS_STYLE.missed:hasOverdue?STATUS_STYLE.overdue:hasDue?STATUS_STYLE.due:allDone?STATUS_STYLE.done:{bg:"#f8fafc",c:"#475569",rowBdr:"#e2e8f0"};
     html+=`<div style="margin-bottom:14px">
       <div style="display:flex;align-items:center;gap:8px;background:${hStyle.bg};
@@ -237,7 +243,6 @@ function buildTimeBlocks(site,ds){
   return html;
 }
 
-// ── overview ──────────────────────────────────────────────────
 function buildOverview(){
   const st=getStats();
   let html=`
@@ -263,7 +268,7 @@ function buildOverview(){
       <div style="height:5px;background:#f1f5f9;border-radius:3px;margin-bottom:8px;overflow:hidden">
         <div style="height:100%;width:${p}%;background:${barCol};border-radius:3px"></div>
       </div>
-      <div style="font-size:11px;color:#64748b;line-height:1.6">
+      <div style="font-size:11px;color:#64748b;line-height:1.8">
         <span style="color:#166534;font-weight:600">${s.done}</span> done
         ${s.due>0?`· <span style="color:#854d0e;font-weight:600">${s.due}</span> due`:""}
         ${s.missed>0?`· <span style="color:#991b1b;font-weight:600">${s.missed}</span> missed`:""}
@@ -275,7 +280,6 @@ function buildOverview(){
   return html;
 }
 
-// ── site view ─────────────────────────────────────────────────
 function buildSite(site){
   const ds=dstr(now),s=getStats(site,ds);
   return `
@@ -294,7 +298,6 @@ function buildSite(site){
   ${buildTimeBlocks(site,ds)}`;
 }
 
-// ── history list (7 days) ─────────────────────────────────────
 function buildHistory(){
   let html=`<div style="font-size:13px;color:#64748b;margin-bottom:12px">Past 7 days</div>`;
   for(let i=1;i<=7;i++){
@@ -324,32 +327,25 @@ function buildHistory(){
       const sp=sc.total>0?Math.round((sc.done/sc.total)*100):0;
       html+=`<div style="background:${c.bg};border-radius:8px;padding:8px">
         <div style="font-weight:600;font-size:12px;color:${c.color};margin-bottom:3px">${site}</div>
-        <div style="font-size:11px;color:${c.color}">${sc.done}/${sc.total} · ${sp}%
-          ${sc.missed>0?`<span style="color:#991b1b"> · ${sc.missed}M</span>`:""}
-          ${sc.overdue>0?`<span style="color:#c2410c"> · ${sc.overdue}OD</span>`:""}
-        </div>
+        <div style="font-size:11px;color:${c.color}">${sc.done}/${sc.total} · ${sp}%${sc.missed>0?` · <span style="color:#991b1b">${sc.missed}M</span>`:""}${sc.overdue>0?` · <span style="color:#c2410c">${sc.overdue}OD</span>`:""}</div>
       </div>`;
     });
-    html+=`</div>
-      <div style="text-align:center;margin-top:10px;font-size:12px;color:#94a3b8">Tap to see full details →</div>
-    </div>`;
+    html+=`</div><div style="text-align:center;margin-top:10px;font-size:12px;color:#94a3b8">Tap to see full details →</div></div>`;
   }
   return html;
 }
 
-// ── history detail ────────────────────────────────────────────
 function buildHistoryDetail(ds){
-  const d=new Date(ds);
+  const d=new Date(ds+"T12:00:00");
   const lbl=d.toLocaleDateString("en-GB",{weekday:"long",day:"numeric",month:"long"});
   const s=getStats(null,ds);
   const pct=s.total>0?Math.round((s.done/s.total)*100):0;
-  const col=pct>=90?"#16a34a":pct>=60?"#d97706":"#dc2626";
   let html=`
   <div id="back-btn" style="display:inline-flex;align-items:center;gap:6px;margin-bottom:16px;
     padding:8px 14px;border-radius:20px;border:1px solid #e2e8f0;background:#fff;
     font-size:13px;font-weight:600;color:#475569;cursor:pointer">← Back</div>
   <div style="background:#fff;border-radius:14px;border:1px solid #e2e8f0;padding:14px;margin-bottom:16px">
-    <div style="font-weight:700;font-size:16px;margin-bottom:6px">${lbl}</div>
+    <div style="font-weight:700;font-size:16px;margin-bottom:8px">${lbl}</div>
     <div style="display:flex;flex-wrap:wrap;gap:6px">
       <span style="font-size:12px;font-weight:600;padding:3px 10px;border-radius:20px;background:#dcfce7;color:#166534">${s.done} done</span>
       ${s.missed>0?`<span style="font-size:12px;font-weight:600;padding:3px 10px;border-radius:20px;background:#fee2e2;color:#991b1b">${s.missed} missed</span>`:""}
@@ -375,7 +371,6 @@ function buildHistoryDetail(ds){
   return html;
 }
 
-// ── modal ─────────────────────────────────────────────────────
 function buildModal(){
   if(!modal)return"";
   const{site,type,hr,ds}=modal,c=SITE_CFG[site];
@@ -401,9 +396,7 @@ function buildToasts(){
   return `<div style="padding:0 16px 8px">${toasts.map(t=>{const[bg,co,bd]=(cm[t.kind]||cm.ok).split("|");return`<div style="background:${bg};border:1px solid ${bd};color:${co};border-radius:10px;padding:11px 14px;font-size:13px;font-weight:600;margin-bottom:6px">${t.msg}</div>`;}).join("")}</div>`;
 }
 
-// ── render ────────────────────────────────────────────────────
 function render(){
-  if(loading){document.getElementById("app").innerHTML=`<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;gap:14px"><div style="font-size:32px">🏭</div><div style="color:#64748b;font-size:15px">Connecting…</div></div>`;return;}
   const app=document.getElementById("app");if(!app)return;
   const tabs2=["overview",...SITES,"history"],
         tlbls={overview:"Overview",history:"History",...Object.fromEntries(SITES.map(s=>[s,s]))};
@@ -411,8 +404,15 @@ function render(){
     const act=tab===t,c=SITE_CFG[t];
     return `<button data-tab="${t}" style="padding:7px 13px;border-radius:20px;font-size:13px;font-weight:${act?600:400};border:${act?(c?`1.5px solid ${c.color}`:"1.5px solid #334155"):"1px solid #e2e8f0"};background:${act?(c?c.bg:"#f1f5f9"):"#fff"};color:${act?(c?c.color:"#1e293b"):"#64748b"};white-space:nowrap;flex-shrink:0">${tlbls[t]}</button>`;
   }).join("");
-  const connDot=`<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${connected?"#22c55e":"#f59e0b"};margin-right:5px"></span>`;
+
+  const dotCol=dbStatus==="online"?"#22c55e":dbStatus==="connecting"?"#f59e0b":"#ef4444";
+  const dotTxt=dbStatus==="online"?"Live sync on":dbStatus==="connecting"?"Connecting…":"Sync offline";
+  const connDot=`<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${dotCol};margin-right:5px"></span>`;
+
   const notifBar=notifPerm!=="granted"?`<div id="notif-bar" style="background:#fef9c3;border:1px solid #fde68a;border-radius:10px;padding:8px 12px;font-size:12px;color:#854d0e;cursor:pointer;margin-bottom:10px;font-weight:500">Tap here to enable notifications for check reminders</div>`:"";
+
+  const offlineBanner=dbStatus==="offline"?`<div style="background:#fff1f2;border:1px solid #fecdd3;border-radius:10px;padding:8px 12px;font-size:12px;color:#991b1b;margin-bottom:10px;font-weight:500">No database connection — checks cannot be saved or synced. Please check your internet connection.</div>`:"";
+
   let content="";
   if(tab==="overview")content=buildOverview();
   else if(SITES.includes(tab))content=buildSite(tab);
@@ -421,17 +421,20 @@ function render(){
   app.innerHTML=`
   <div style="background:#fff;border-bottom:1px solid #e2e8f0;padding:14px 16px 10px;position:sticky;top:0;z-index:50">
     <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px">
-      <div><div style="font-size:17px;font-weight:700;color:#1e293b">Warehouse Checks</div>
-        <div style="font-size:12px;color:#64748b;margin-top:2px">${connDot}${connected?"Live sync on":"Reconnecting…"} &nbsp;·&nbsp; ${now.toLocaleDateString("en-GB",{weekday:"long",day:"numeric",month:"long"})}</div></div>
+      <div>
+        <div style="font-size:17px;font-weight:700;color:#1e293b">Warehouse Checks</div>
+        <div style="font-size:12px;color:#64748b;margin-top:2px">${connDot}${dotTxt} &nbsp;·&nbsp; ${now.toLocaleDateString("en-GB",{weekday:"long",day:"numeric",month:"long"})}</div>
+      </div>
       <div style="background:#f8fafc;border-radius:10px;border:1px solid #e2e8f0;padding:7px 13px;text-align:center">
-        <div style="font-size:19px;font-weight:700;letter-spacing:-0.5px;color:#1e293b">${now.toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})}</div></div>
-    </div>${notifBar}
+        <div style="font-size:19px;font-weight:700;letter-spacing:-0.5px;color:#1e293b">${now.toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})}</div>
+      </div>
+    </div>
+    ${offlineBanner}${notifBar}
     <div class="scroll-x">${tabsHtml}</div>
   </div>
   <div style="padding:16px">${content}</div>
   ${buildToasts()}${buildModal()}`;
 
-  // bind events
   app.querySelectorAll("[data-tab]").forEach(el=>el.addEventListener("click",()=>{tab=el.dataset.tab;historyDay=null;render();}));
   app.querySelectorAll("[data-log]").forEach(el=>el.addEventListener("click",()=>{
     const[site,type,hr,ds]=el.dataset.log.split("||");
@@ -455,27 +458,34 @@ function render(){
 
 async function confirmLog(){
   if(!modal||!nameInput.trim())return;
+  if(!firebaseReady||!db){addToast("Cannot save — no database connection","danger",6000);return;}
   const{site,type,hr,ds}=modal,entry={name:nameInput.trim(),loggedAt:new Date().toISOString()};
-  try{await db.ref(fbPath(ds,site,type,hr)).set(entry);saveLastName(nameInput.trim());lastName=nameInput.trim();modal=null;nameInput="";}
-  catch(e){addToast("Could not save — check your connection","danger",6000);}
+  try{
+    await db.ref(fbPath(ds,site,type,hr)).set(entry);
+    saveLastName(nameInput.trim());lastName=nameInput.trim();modal=null;nameInput="";
+  } catch(e){addToast("Could not save — check your connection","danger",6000);}
 }
-function addToast(msg,kind,ms=8000){const id=Date.now()+Math.random();toasts=[...toasts.slice(-2),{id,msg,kind}];render();setTimeout(()=>{toasts=toasts.filter(t=>t.id!==id);render();},ms);}
+
+function addToast(msg,kind,ms=8000){
+  const id=Date.now()+Math.random();
+  toasts=[...toasts.slice(-2),{id,msg,kind}];render();
+  setTimeout(()=>{toasts=toasts.filter(t=>t.id!==id);render();},ms);
+}
 
 function checkAlerts(){
   const h=now.getHours(),m=now.getMinutes(),ds=dstr(now);
   const push=(title,body,kind)=>{addToast(body,kind,10000);if(notifPerm==="granted"){try{new Notification(title,{body});}catch{}}};
-  // Alert 10 mins before (at :50)
   if(m===50){const dh=h+1;SITES.forEach(site=>Object.entries(SCH[site]).forEach(([type,hrs])=>{
     if(hrs.includes(dh)){const nk=nfKey(ds,site,type,dh,"pre"),ck=ckKey(ds,site,type,dh);
       if(!notified.has(nk)&&!checks[ck]){notified.add(nk);saveNotified(notified);push("Check due soon",`${site} — ${CHECK_CFG[type].label} due at ${fmtH(dh)}`,"warn");}}
   )));}
-  // Alert 15 mins after (missed)
   if(m===15){SITES.forEach(site=>Object.entries(SCH[site]).forEach(([type,hrs])=>{
     if(hrs.includes(h)){const nk=nfKey(ds,site,type,h,"late"),ck=ckKey(ds,site,type,h);
       if(!notified.has(nk)&&!checks[ck]){notified.add(nk);saveNotified(notified);push("Check missed!",`${site} — ${CHECK_CFG[type].label} at ${fmtH(h)} was not completed`,"danger");}}
   )));}
 }
-setInterval(()=>{now=new Date();checkAlerts();if(!loading)render();},60000);
+
+setInterval(()=>{now=new Date();checkAlerts();render();},60000);
 </script>
 </body>
 </html>
