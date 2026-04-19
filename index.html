@@ -344,13 +344,17 @@ function buildModal(){
     // Check if current device's saved name matches the logger's name
     var isOwner = entry && lastName && lastName.trim().toLowerCase() === entry.name.trim().toLowerCase();
     wrap+='<div style="display:flex;flex-direction:column;gap:10px">';
-    wrap+='<button id="relog-btn" style="width:100%;padding:13px;border-radius:10px;border:none;background:#185FA5;color:#fff;font-size:15px;font-weight:600">↺ &nbsp;Log again (replace)</button>';
     if(isOwner){
-      wrap+='<button id="delete-btn" style="width:100%;padding:13px;border-radius:10px;border:1.5px solid #fecdd3;background:#fff1f2;color:#991b1b;font-size:15px;font-weight:600">'+(saving?"Deleting…":"✕ &nbsp;Delete this log")+'</button>';
+      wrap+='<button id="relog-btn" style="width:100%;padding:13px;border-radius:10px;border:none;background:#185FA5;color:#fff;font-size:15px;font-weight:600">&#8635; &nbsp;Log again (replace)</button>';
+      wrap+='<button id="delete-btn" style="width:100%;padding:13px;border-radius:10px;border:1.5px solid #fecdd3;background:#fff1f2;color:#991b1b;font-size:15px;font-weight:600">'+(saving?"Deleting...":"&#10005; &nbsp;Delete this log")+'</button>';
     } else {
-      wrap+='<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:11px 13px;font-size:13px;color:#64748b;text-align:center">Only <span style="font-weight:600;color:#1e293b">'+(entry?entry.name:"the logger")+'</span> can delete this log</div>';
+      wrap+='<div style="background:#fff1f2;border:1px solid #fecdd3;border-radius:10px;padding:16px;text-align:center">';
+      wrap+='<div style="font-size:28px;margin-bottom:8px">&#128274;</div>';
+      wrap+='<div style="font-weight:700;font-size:14px;color:#991b1b;margin-bottom:6px">Access restricted</div>';
+      wrap+='<div style="font-size:13px;color:#64748b">Only <span style="font-weight:600;color:#1e293b">'+(entry?entry.name:"the logger")+'</span> can edit or delete this log.</div>';
+      wrap+='</div>';
     }
-    wrap+='<button id="cancel-btn" style="width:100%;padding:13px;border-radius:10px;border:1px solid #e2e8f0;background:#fff;color:#64748b;font-size:14px">Cancel</button>';
+    wrap+='<button id="cancel-btn" style="width:100%;padding:13px;border-radius:10px;border:1px solid #e2e8f0;background:#fff;color:#64748b;font-size:14px">Close</button>';
     wrap+='</div>';
 
   } else {
