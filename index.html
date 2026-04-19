@@ -21,28 +21,18 @@
 <div id="app"></div>
 <script>
 
-// ── Firebase REST API (no external SDK needed) ─────────────────
+// ── Firebase REST ─────────────────────────────────────────────
 var DB_URL = "https://warehouse-checks-default-rtdb.firebaseio.com";
-
-function dbRead(path) {
-  return fetch(DB_URL + path + ".json")
-    .then(function(r){ return r.json(); });
-}
-function dbWrite(path, data) {
-  return fetch(DB_URL + path + ".json", {
-    method: "PUT",
-    headers: {"Content-Type":"application/json"},
-    body: JSON.stringify(data)
-  }).then(function(r){ return r.json(); });
-}
+function dbRead(path){return fetch(DB_URL+path+".json").then(function(r){return r.json();});}
+function dbWrite(path,data){return fetch(DB_URL+path+".json",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(data)}).then(function(r){return r.json();});}
 
 // ── config ────────────────────────────────────────────────────
 var SITES = ["Fuji","Koi","Bonsai","Yuzu"];
 var SITE_CFG = {
-  Fuji:   {color:"#185FA5", bg:"#dbeafe", abbr:"FU"},
-  Koi:    {color:"#993C1D", bg:"#fee2e2", abbr:"KO"},
-  Bonsai: {color:"#0F6E56", bg:"#d1fae5", abbr:"BO"},
-  Yuzu:   {color:"#854F0B", bg:"#fef3c7", abbr:"YU"}
+  Fuji:   {color:"#185FA5", bg:"#dbeafe", abbr:"FU", pageBg:"#eff6ff"},
+  Koi:    {color:"#993C1D", bg:"#fee2e2", abbr:"KO", pageBg:"#fff5f5"},
+  Bonsai: {color:"#0F6E56", bg:"#d1fae5", abbr:"BO", pageBg:"#f0fdf4"},
+  Yuzu:   {color:"#854F0B", bg:"#fef3c7", abbr:"YU", pageBg:"#fffbeb"}
 };
 var CHECK_CFG = {
   mice:    {label:"Mice activity"},
@@ -83,114 +73,87 @@ var STATUS_STYLE = {
 };
 
 // ── helpers ───────────────────────────────────────────────────
-function dstr(d) {
-  if (!d) d = new Date();
-  return d.getFullYear()+"-"+pad2(d.getMonth()+1)+"-"+pad2(d.getDate());
-}
-function fmtH(h) {
-  if (h===0) return "12:00 AM";
-  if (h<12)  return h+":00 AM";
-  if (h===12) return "12:00 PM";
-  return (h-12)+":00 PM";
-}
-function pad2(n) { return String(n).padStart(2,"0"); }
-function ckKey(ds,site,type,hr)     { return ds+"||"+site+"||"+type+"||"+pad2(hr); }
-function dbPath(ds,site,type,hr)    { return "/checks/"+ds+"/"+site+"/"+type+"/h"+pad2(hr); }
-function nfKeyFn(ds,site,type,hr,k) { return "nf|"+ds+"|"+site+"|"+type+"|"+pad2(hr)+"|"+k; }
-function loadLastName()  { try{return localStorage.getItem("wh_last_name")||"";}catch(e){return "";} }
-function saveLastName(n) { try{localStorage.setItem("wh_last_name",n);}catch(e){} }
-function loadNotified()  { try{var r=localStorage.getItem("wh_notified_"+dstr());return r?JSON.parse(r):[];}catch(e){return [];} }
-function saveNotified(a) { try{localStorage.setItem("wh_notified_"+dstr(),JSON.stringify(a));}catch(e){} }
+function dstr(d){if(!d)d=new Date();return d.getFullYear()+"-"+pad2(d.getMonth()+1)+"-"+pad2(d.getDate());}
+function fmtH(h){if(h===0)return"12:00 AM";if(h<12)return h+":00 AM";if(h===12)return"12:00 PM";return(h-12)+":00 PM";}
+function pad2(n){return String(n).padStart(2,"0");}
+function ckKey(ds,site,type,hr){return ds+"||"+site+"||"+type+"||"+pad2(hr);}
+function dbPath(ds,site,type,hr){return"/checks/"+ds+"/"+site+"/"+type+"/h"+pad2(hr);}
+function nfKeyFn(ds,site,type,hr,k){return"nf|"+ds+"|"+site+"|"+type+"|"+pad2(hr)+"|"+k;}
+function loadLastName(){try{return localStorage.getItem("wh_last_name")||"";}catch(e){return"";}}
+function saveLastName(n){try{localStorage.setItem("wh_last_name",n);}catch(e){}}
+function loadNotified(){try{var r=localStorage.getItem("wh_notified_"+dstr());return r?JSON.parse(r):[];}catch(e){return[];}}
+function saveNotified(a){try{localStorage.setItem("wh_notified_"+dstr(),JSON.stringify(a));}catch(e){}}
 
 // ── state ─────────────────────────────────────────────────────
-var now        = new Date();
-var tab        = "overview";
-var checks     = {};
-var dbStatus   = "connecting";
-var modal      = null;
-var nameInput  = "";
-var lastName   = loadLastName();
-var toasts     = [];
-var notifPerm  = typeof Notification!=="undefined" ? Notification.permission : "denied";
-var historyDay = null;
-var notifiedArr = loadNotified();
-var saving     = false;
+var now=new Date(),tab="overview",checks={},dbStatus="connecting";
+var modal=null,nameInput="",lastName=loadLastName(),toasts=[],saving=false;
+var notifPerm=typeof Notification!=="undefined"?Notification.permission:"denied";
+var historyDay=null,notifiedArr=loadNotified();
 
-// ── load data from Firebase REST ──────────────────────────────
-function loadData() {
-  var cutoff = dstr(new Date(now.getFullYear(), now.getMonth(), now.getDate()-8));
-  dbRead("/checks")
-    .then(function(data) {
-      if (!data) data = {};
-      checks = {};
-      var dsList = Object.keys(data);
-      for (var i=0; i<dsList.length; i++) {
-        var ds = dsList[i];
-        if (ds < cutoff) continue;
-        var sites = data[ds] || {};
-        var siteList = Object.keys(sites);
-        for (var j=0; j<siteList.length; j++) {
-          var site = siteList[j];
-          var types = sites[site] || {};
-          var typeList = Object.keys(types);
-          for (var k=0; k<typeList.length; k++) {
-            var type = typeList[k];
-            var hours = types[type] || {};
-            var hrList = Object.keys(hours);
-            for (var l=0; l<hrList.length; l++) {
-              var hrKey = hrList[l];
-              var hr = parseInt(hrKey.replace("h",""));
-              checks[ckKey(ds,site,type,hr)] = hours[hrKey];
-            }
+// ── Firebase REST load ────────────────────────────────────────
+function loadData(){
+  var cutoff=dstr(new Date(now.getFullYear(),now.getMonth(),now.getDate()-8));
+  dbRead("/checks").then(function(data){
+    if(!data)data={};
+    checks={};
+    var dsList=Object.keys(data);
+    for(var i=0;i<dsList.length;i++){
+      var ds=dsList[i];if(ds<cutoff)continue;
+      var sites=data[ds]||{},sl=Object.keys(sites);
+      for(var j=0;j<sl.length;j++){
+        var site=sl[j],types=sites[site]||{},tl=Object.keys(types);
+        for(var k=0;k<tl.length;k++){
+          var type=tl[k],hours=types[type]||{},hl=Object.keys(hours);
+          for(var l=0;l<hl.length;l++){
+            var hrKey=hl[l],hr=parseInt(hrKey.replace("h",""));
+            checks[ckKey(ds,site,type,hr)]=hours[hrKey];
           }
         }
       }
-      dbStatus = "online";
-      render();
-    })
-    .catch(function(e) {
-      console.warn("Load failed:", e);
-      dbStatus = "offline";
-      render();
-    });
+    }
+    dbStatus="online";render();
+  }).catch(function(){dbStatus="offline";render();});
 }
-
-// Poll every 30 seconds to stay in sync with other devices
-function startPolling() {
-  loadData();
-  setInterval(loadData, 30000);
-}
+function startPolling(){loadData();setInterval(loadData,30000);}
 
 // ── status ────────────────────────────────────────────────────
-function getStatus(site, type, hr, ds) {
-  var key   = ckKey(ds, site, type, hr);
-  var entry = checks[key];
-  var isToday = (ds === dstr(now));
-  if (entry) {
-    var logTime  = new Date(entry.loggedAt);
-    var minsLate = (logTime.getHours()*60+logTime.getMinutes()) - hr*60;
-    return minsLate > 15 ? {s:"overdue",entry:entry} : {s:"done",entry:entry};
+function getStatus(site,type,hr,ds){
+  var key=ckKey(ds,site,type,hr),entry=checks[key],isToday=(ds===dstr(now));
+  if(entry){
+    var logTime=new Date(entry.loggedAt);
+    var minsLate=(logTime.getHours()*60+logTime.getMinutes())-hr*60;
+    return minsLate>15?{s:"overdue",entry:entry}:{s:"done",entry:entry};
   }
-  if (isToday) {
-    var diff = now.getHours()*60+now.getMinutes() - hr*60;
-    if (diff > 15)   return {s:"missed",   entry:null};
-    if (diff >= -10) return {s:"due",      entry:null};
-    return {s:"upcoming", entry:null};
+  if(isToday){
+    var diff=now.getHours()*60+now.getMinutes()-hr*60;
+    if(diff>15)  return{s:"missed",  entry:null};
+    if(diff>=-10)return{s:"due",     entry:null};
+    return{s:"upcoming",entry:null};
   }
-  return {s:"missed", entry:null};
+  return{s:"missed",entry:null};
 }
 
-function getStats(site, ds) {
-  if (!ds) ds = dstr(now);
-  var sites = site ? [site] : SITES;
+// Can log if: today, not already done, and within 15 mins BEFORE to 15 mins AFTER check time
+function canLogCheck(site,type,hr,ds){
+  var res=getStatus(site,type,hr,ds);
+  if(!res||res.s==="done") return false;
+  if(ds!==dstr(now)) return false;
+  var diff=now.getHours()*60+now.getMinutes()-hr*60;
+  // Allow logging from 15 mins before (-15) up to any time after (missed/overdue still loggable)
+  return diff>=-15;
+}
+
+function getStats(site,ds){
+  if(!ds)ds=dstr(now);
+  var sites=site?[site]:SITES;
   var done=0,overdue=0,missed=0,due=0,upcoming=0,total=0;
-  for (var i=0;i<sites.length;i++) {
-    var s=sites[i], typeKeys=Object.keys(SCH[s]);
-    for (var j=0;j<typeKeys.length;j++) {
-      var hrs=SCH[s][typeKeys[j]];
-      for (var k=0;k<hrs.length;k++) {
+  for(var i=0;i<sites.length;i++){
+    var s=sites[i],tk=Object.keys(SCH[s]);
+    for(var j=0;j<tk.length;j++){
+      var hrs=SCH[s][tk[j]];
+      for(var k=0;k<hrs.length;k++){
         total++;
-        var st=getStatus(s,typeKeys[j],hrs[k],ds).s;
+        var st=getStatus(s,tk[j],hrs[k],ds).s;
         if(st==="done")done++;
         else if(st==="overdue")overdue++;
         else if(st==="missed")missed++;
@@ -199,58 +162,63 @@ function getStats(site, ds) {
       }
     }
   }
-  return {done:done,overdue:overdue,missed:missed,due:due,upcoming:upcoming,total:total};
+  return{done:done,overdue:overdue,missed:missed,due:due,upcoming:upcoming,total:total};
 }
 
-function badge(s) {
-  var m=STATUS_STYLE[s]||STATUS_STYLE.upcoming;
-  return '<span style="font-size:11px;font-weight:600;padding:2px 9px;border-radius:20px;white-space:nowrap;background:'+m.bg+';color:'+m.c+'">'+m.label+'</span>';
-}
+function badge(s){var m=STATUS_STYLE[s]||STATUS_STYLE.upcoming;return'<span style="font-size:11px;font-weight:600;padding:2px 9px;border-radius:20px;white-space:nowrap;background:'+m.bg+';color:'+m.c+'">'+m.label+'</span>';}
 
-function buildTypeRow(site,type,hr,ds) {
-  var res=getStatus(site,type,hr,ds), s=res.s, entry=res.entry;
-  var isToday=(ds===dstr(now)), canLog=isToday&&s!=="done";
+function buildTypeRow(site,type,hr,ds){
+  var res=getStatus(site,type,hr,ds),s=res.s,entry=res.entry;
+  var canLog=canLogCheck(site,type,hr,ds);
   var m=STATUS_STYLE[s]||STATUS_STYLE.upcoming;
   var sub="";
-  if (entry) {
+  if(entry){
     var t=new Date(entry.loggedAt).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});
     sub='<div style="font-size:12px;color:#64748b;margin-top:2px">By '+entry.name+' · '+t+(s==="overdue"?' <span style="color:#c2410c">(logged late)</span>':'')+'</div>';
-  } else if(s==="missed") {
+  } else if(s==="missed"){
     sub='<div style="font-size:12px;color:#991b1b;margin-top:2px">Not completed</div>';
-  } else if(s==="due") {
+  } else if(s==="due"){
     sub='<div style="font-size:12px;color:#ca8a04;margin-top:2px">Tap to log now</div>';
+  } else if(s==="upcoming"&&canLog){
+    // Within 15 min window before check - show as ready to log
+    sub='<div style="font-size:12px;color:#64748b;margin-top:2px">Ready to log (early)</div>';
+  } else if(s==="upcoming"){
+    // Show how long until they can log
+    var diff=now.getHours()*60+now.getMinutes()-hr*60;
+    var minsUntil=Math.abs(diff+15);
+    sub='<div style="font-size:12px;color:#94a3b8;margin-top:2px">Opens in ~'+minsUntil+' min</div>';
   }
   var logAttr=canLog?'data-log="'+site+'||'+type+'||'+hr+'||'+ds+'"':'';
   return '<div '+logAttr+' style="display:flex;align-items:center;gap:10px;padding:10px 13px;border-radius:10px;border:1px solid '+m.rowBdr+';background:'+m.rowBg+';cursor:'+(canLog?"pointer":"default")+';margin-bottom:6px"><div style="flex:1"><div style="font-weight:'+(s==="done"?"400":"500")+';font-size:14px;color:'+(s==="done"?"#94a3b8":"#1e293b")+'">'+CHECK_CFG[type].label+'</div>'+sub+'</div>'+badge(s)+'</div>';
 }
 
-function buildTimeBlocks(site,ds) {
-  var allHours={}, typeKeys=Object.keys(SCH[site]);
+function buildTimeBlocks(site,ds){
+  var allHours={},typeKeys=Object.keys(SCH[site]);
   for(var i=0;i<typeKeys.length;i++){var hrs=SCH[site][typeKeys[i]];for(var j=0;j<hrs.length;j++)allHours[hrs[j]]=true;}
   var sortedHours=Object.keys(allHours).map(Number).sort(function(a,b){return a-b;});
   var html="";
-  for(var hi=0;hi<sortedHours.length;hi++) {
+  for(var hi=0;hi<sortedHours.length;hi++){
     var hr=sortedHours[hi];
     var typesAtHour=typeKeys.filter(function(type){return SCH[site][type].indexOf(hr)>=0;});
-    if(!typesAtHour.length) continue;
+    if(!typesAtHour.length)continue;
     var statuses=typesAtHour.map(function(type){return getStatus(site,type,hr,ds).s;});
-    var hasMissed=statuses.indexOf("missed")>=0, hasOverdue=statuses.indexOf("overdue")>=0,
-        hasDue=statuses.indexOf("due")>=0, allDone=statuses.every(function(s){return s==="done";});
+    var hasMissed=statuses.indexOf("missed")>=0,hasOverdue=statuses.indexOf("overdue")>=0,
+        hasDue=statuses.indexOf("due")>=0,allDone=statuses.every(function(s){return s==="done";});
     var hStyle=hasMissed?STATUS_STYLE.missed:hasOverdue?STATUS_STYLE.overdue:hasDue?STATUS_STYLE.due:allDone?STATUS_STYLE.done:{bg:"#f8fafc",c:"#475569",rowBdr:"#e2e8f0"};
     html+='<div style="margin-bottom:14px">';
     html+='<div style="display:flex;align-items:center;gap:8px;background:'+hStyle.bg+';border:1px solid '+hStyle.rowBdr+';border-radius:10px 10px 0 0;padding:9px 14px;font-size:14px;font-weight:700;color:'+hStyle.c+'">';
     html+=fmtH(hr)+' <span style="font-size:12px;font-weight:400;opacity:0.75">— '+typesAtHour.length+' check'+(typesAtHour.length>1?'s':'')+'</span></div>';
     html+='<div style="border:1px solid '+hStyle.rowBdr+';border-top:none;border-radius:0 0 10px 10px;padding:8px 8px 2px;background:#fff">';
-    for(var ti=0;ti<typesAtHour.length;ti++) html+=buildTypeRow(site,typesAtHour[ti],hr,ds);
+    for(var ti=0;ti<typesAtHour.length;ti++)html+=buildTypeRow(site,typesAtHour[ti],hr,ds);
     html+='</div></div>';
   }
   return html;
 }
 
-function statBox(v,c,l){return '<div><div style="font-size:18px;font-weight:600;color:'+c+'">'+v+'</div><div style="font-size:10px;color:#64748b">'+l+'</div></div>';}
-function siteStatBox(v,c,l){return '<div style="background:#fff;border-radius:10px;border:1px solid #e2e8f0;padding:8px 4px"><div style="font-size:18px;font-weight:600;color:'+c+'">'+v+'</div><div style="font-size:10px;color:#64748b">'+l+'</div></div>';}
+function statBox(v,c,l){return'<div><div style="font-size:18px;font-weight:600;color:'+c+'">'+v+'</div><div style="font-size:10px;color:#64748b">'+l+'</div></div>';}
+function siteStatBox(v,c,l){return'<div style="background:rgba(255,255,255,0.8);border-radius:10px;border:1px solid rgba(0,0,0,0.08);padding:8px 4px"><div style="font-size:18px;font-weight:600;color:'+c+'">'+v+'</div><div style="font-size:10px;color:#64748b">'+l+'</div></div>';}
 
-function buildOverview() {
+function buildOverview(){
   var st=getStats(null,dstr(now));
   var html='<div style="background:#fff;border-radius:14px;border:1px solid #e2e8f0;padding:16px;margin-bottom:14px">';
   html+='<div style="font-size:12px;color:#64748b;margin-bottom:10px">Today — '+now.toLocaleDateString("en-GB",{weekday:"long",day:"numeric",month:"long"})+'</div>';
@@ -266,22 +234,22 @@ function buildOverview() {
     html+='<div style="font-weight:600;font-size:15px;color:'+c.color+';margin-bottom:6px">'+site+'</div>';
     html+='<div style="height:5px;background:#f1f5f9;border-radius:3px;margin-bottom:8px;overflow:hidden"><div style="height:100%;width:'+p+'%;background:'+barCol+';border-radius:3px"></div></div>';
     html+='<div style="font-size:11px;color:#64748b;line-height:1.8"><span style="color:#16a34a;font-weight:600">'+s.done+'</span> done';
-    if(s.due>0)     html+=' · <span style="color:#854d0e;font-weight:600">'+s.due+'</span> due';
-    if(s.missed>0)  html+=' · <span style="color:#991b1b;font-weight:600">'+s.missed+'</span> missed';
-    if(s.overdue>0) html+=' · <span style="color:#c2410c;font-weight:600">'+s.overdue+'</span> overdue';
+    if(s.due>0)    html+=' · <span style="color:#854d0e;font-weight:600">'+s.due+'</span> due';
+    if(s.missed>0) html+=' · <span style="color:#991b1b;font-weight:600">'+s.missed+'</span> missed';
+    if(s.overdue>0)html+=' · <span style="color:#c2410c;font-weight:600">'+s.overdue+'</span> overdue';
     html+='</div></div>';
   }
   return html+'</div>';
 }
 
-function buildSite(site) {
-  var ds=dstr(now),s=getStats(site,ds);
+function buildSite(site){
+  var ds=dstr(now),s=getStats(site,ds),c=SITE_CFG[site];
   var html='<div style="display:grid;grid-template-columns:repeat(5,1fr);gap:4px;margin-bottom:16px;text-align:center">';
-  html+=siteStatBox(s.total,"#1e293b","Total")+siteStatBox(s.done,"#16a34a","Done")+siteStatBox(s.due,"#854d0e","Due")+siteStatBox(s.missed,"#991b1b","Missed")+siteStatBox(s.overdue,"#c2410c","Overdue");
+  html+=siteStatBox(s.total,c.color,"Total")+siteStatBox(s.done,"#16a34a","Done")+siteStatBox(s.due,"#854d0e","Due")+siteStatBox(s.missed,"#991b1b","Missed")+siteStatBox(s.overdue,"#c2410c","Overdue");
   return html+'</div>'+buildTimeBlocks(site,ds);
 }
 
-function buildHistory() {
+function buildHistory(){
   var html='<div style="font-size:13px;color:#64748b;margin-bottom:12px">Past 7 days</div>';
   for(var i=1;i<=7;i++){
     var d=new Date(now);d.setDate(d.getDate()-i);
@@ -294,16 +262,16 @@ function buildHistory() {
     html+='<div style="height:5px;background:#f1f5f9;border-radius:3px;margin-bottom:10px;overflow:hidden"><div style="height:100%;width:'+pct+'%;background:'+bar+';border-radius:3px"></div></div>';
     html+='<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">';
     html+='<span style="font-size:11px;font-weight:600;padding:2px 8px;border-radius:20px;background:#dcfce7;color:#166534">'+s.done+' done</span>';
-    if(s.missed>0)  html+='<span style="font-size:11px;font-weight:600;padding:2px 8px;border-radius:20px;background:#fee2e2;color:#991b1b">'+s.missed+' missed</span>';
-    if(s.overdue>0) html+='<span style="font-size:11px;font-weight:600;padding:2px 8px;border-radius:20px;background:#ffedd5;color:#c2410c">'+s.overdue+' overdue</span>';
+    if(s.missed>0) html+='<span style="font-size:11px;font-weight:600;padding:2px 8px;border-radius:20px;background:#fee2e2;color:#991b1b">'+s.missed+' missed</span>';
+    if(s.overdue>0)html+='<span style="font-size:11px;font-weight:600;padding:2px 8px;border-radius:20px;background:#ffedd5;color:#c2410c">'+s.overdue+' overdue</span>';
     html+='</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">';
     for(var si=0;si<SITES.length;si++){
       var site=SITES[si],sc=getStats(site,ds),c=SITE_CFG[site];
       var sp=sc.total>0?Math.round((sc.done/sc.total)*100):0;
       html+='<div style="background:'+c.bg+';border-radius:8px;padding:8px"><div style="font-weight:600;font-size:12px;color:'+c.color+';margin-bottom:3px">'+site+'</div>';
       html+='<div style="font-size:11px;color:'+c.color+'">'+sc.done+'/'+sc.total+' · '+sp+'%';
-      if(sc.missed>0)  html+=' · <span style="color:#991b1b">'+sc.missed+'M</span>';
-      if(sc.overdue>0) html+=' · <span style="color:#c2410c">'+sc.overdue+'OD</span>';
+      if(sc.missed>0) html+=' · <span style="color:#991b1b">'+sc.missed+'M</span>';
+      if(sc.overdue>0)html+=' · <span style="color:#c2410c">'+sc.overdue+'OD</span>';
       html+='</div></div>';
     }
     html+='</div><div style="text-align:center;margin-top:10px;font-size:12px;color:#94a3b8">Tap for full details →</div></div>';
@@ -311,61 +279,64 @@ function buildHistory() {
   return html;
 }
 
-function buildHistoryDetail(ds) {
-  var d=new Date(ds+"T12:00:00"),s=getStats(null,ds);
-  var pct=s.total>0?Math.round((s.done/s.total)*100):0;
+function buildHistoryDetail(ds){
+  var d=new Date(ds+"T12:00:00"),s=getStats(null,ds),pct=s.total>0?Math.round((s.done/s.total)*100):0;
   var html='<div id="back-btn" style="display:inline-flex;align-items:center;gap:6px;margin-bottom:16px;padding:8px 14px;border-radius:20px;border:1px solid #e2e8f0;background:#fff;font-size:13px;font-weight:600;color:#475569;cursor:pointer">← Back</div>';
   html+='<div style="background:#fff;border-radius:14px;border:1px solid #e2e8f0;padding:14px;margin-bottom:16px">';
   html+='<div style="font-weight:700;font-size:16px;margin-bottom:8px">'+d.toLocaleDateString("en-GB",{weekday:"long",day:"numeric",month:"long"})+'</div>';
   html+='<div style="display:flex;flex-wrap:wrap;gap:6px">';
   html+='<span style="font-size:12px;font-weight:600;padding:3px 10px;border-radius:20px;background:#dcfce7;color:#166534">'+s.done+' done</span>';
-  if(s.missed>0)  html+='<span style="font-size:12px;font-weight:600;padding:3px 10px;border-radius:20px;background:#fee2e2;color:#991b1b">'+s.missed+' missed</span>';
-  if(s.overdue>0) html+='<span style="font-size:12px;font-weight:600;padding:3px 10px;border-radius:20px;background:#ffedd5;color:#c2410c">'+s.overdue+' overdue</span>';
+  if(s.missed>0) html+='<span style="font-size:12px;font-weight:600;padding:3px 10px;border-radius:20px;background:#fee2e2;color:#991b1b">'+s.missed+' missed</span>';
+  if(s.overdue>0)html+='<span style="font-size:12px;font-weight:600;padding:3px 10px;border-radius:20px;background:#ffedd5;color:#c2410c">'+s.overdue+' overdue</span>';
   html+='<span style="font-size:12px;font-weight:600;padding:3px 10px;border-radius:20px;background:#f1f5f9;color:#475569">'+pct+'% complete</span></div></div>';
   for(var i=0;i<SITES.length;i++){
-    var site=SITES[i],c=SITE_CFG[site],sc=getStats(site,ds);
-    var sp=sc.total>0?Math.round((sc.done/sc.total)*100):0;
+    var site=SITES[i],c=SITE_CFG[site],sc=getStats(site,ds),sp=sc.total>0?Math.round((sc.done/sc.total)*100):0;
     html+='<div style="margin-bottom:24px"><div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">';
     html+='<div style="font-size:16px;font-weight:700;color:'+c.color+'">'+site+'</div>';
     html+='<div style="display:flex;gap:4px"><span style="font-size:11px;font-weight:600;padding:2px 8px;border-radius:20px;background:'+c.bg+';color:'+c.color+'">'+sp+'%</span>';
-    if(sc.missed>0)  html+='<span style="font-size:11px;font-weight:600;padding:2px 8px;border-radius:20px;background:#fee2e2;color:#991b1b">'+sc.missed+'M</span>';
-    if(sc.overdue>0) html+='<span style="font-size:11px;font-weight:600;padding:2px 8px;border-radius:20px;background:#ffedd5;color:#c2410c">'+sc.overdue+'OD</span>';
+    if(sc.missed>0) html+='<span style="font-size:11px;font-weight:600;padding:2px 8px;border-radius:20px;background:#fee2e2;color:#991b1b">'+sc.missed+'M</span>';
+    if(sc.overdue>0)html+='<span style="font-size:11px;font-weight:600;padding:2px 8px;border-radius:20px;background:#ffedd5;color:#c2410c">'+sc.overdue+'OD</span>';
     html+='</div></div>'+buildTimeBlocks(site,ds)+'</div>';
   }
   return html;
 }
 
-function buildModal() {
-  if(!modal) return "";
+function buildModal(){
+  if(!modal)return"";
   var site=modal.site,type=modal.type,hr=modal.hr,ds=modal.ds,c=SITE_CFG[site];
   var btnBg=nameInput.trim()?(saving?"#94a3b8":"#185FA5"):"#94a3b8";
-  var btnTxt=saving?"Saving…":"Confirm check";
-  return '<div id="overlay" style="position:fixed;inset:0;background:rgba(0,0,0,0.45);display:flex;align-items:flex-end;z-index:200"><div style="background:#fff;border-radius:20px 20px 0 0;padding:22px 20px 36px;width:100%;max-width:430px;margin:0 auto"><div style="width:38px;height:4px;background:#e2e8f0;border-radius:2px;margin:0 auto 18px"></div><div style="font-weight:700;font-size:18px;margin-bottom:5px">Log check</div><div style="font-size:13px;color:#64748b;background:#f8fafc;border-radius:10px;padding:9px 13px;margin-bottom:20px"><span style="color:'+c.color+';font-weight:600">'+site+'</span> &mdash; '+CHECK_CFG[type].label+' &mdash; '+fmtH(hr)+'</div><label style="display:block;font-weight:600;font-size:13px;margin-bottom:7px;color:#64748b">Your name</label><input id="name-input" value="'+nameInput.replace(/"/g,"&quot;")+'" placeholder="Enter your name" autocomplete="name" autocapitalize="words" style="width:100%;padding:12px 14px;border:1.5px solid #cbd5e1;border-radius:10px;font-size:16px;color:#1e293b;background:#fff;outline:none;margin-bottom:16px"/><div style="display:flex;gap:10px"><button id="cancel-btn" style="flex:1;padding:13px;border-radius:10px;border:1px solid #e2e8f0;background:#fff;font-size:14px;color:#64748b">Cancel</button><button id="confirm-btn" style="flex:2;padding:13px;border-radius:10px;border:none;background:'+btnBg+';color:#fff;font-size:15px;font-weight:600">'+btnTxt+'</button></div></div></div>';
+  return '<div id="overlay" style="position:fixed;inset:0;background:rgba(0,0,0,0.45);display:flex;align-items:flex-end;z-index:200"><div style="background:#fff;border-radius:20px 20px 0 0;padding:22px 20px 36px;width:100%;max-width:430px;margin:0 auto"><div style="width:38px;height:4px;background:#e2e8f0;border-radius:2px;margin:0 auto 18px"></div><div style="font-weight:700;font-size:18px;margin-bottom:5px">Log check</div><div style="font-size:13px;color:#64748b;background:#f8fafc;border-radius:10px;padding:9px 13px;margin-bottom:20px"><span style="color:'+c.color+';font-weight:600">'+site+'</span> &mdash; '+CHECK_CFG[type].label+' &mdash; '+fmtH(hr)+'</div><label style="display:block;font-weight:600;font-size:13px;margin-bottom:7px;color:#64748b">Your name</label><input id="name-input" value="'+nameInput.replace(/"/g,"&quot;")+'" placeholder="Enter your name" autocomplete="name" autocapitalize="words" style="width:100%;padding:12px 14px;border:1.5px solid #cbd5e1;border-radius:10px;font-size:16px;color:#1e293b;background:#fff;outline:none;margin-bottom:16px"/><div style="display:flex;gap:10px"><button id="cancel-btn" style="flex:1;padding:13px;border-radius:10px;border:1px solid #e2e8f0;background:#fff;font-size:14px;color:#64748b">Cancel</button><button id="confirm-btn" style="flex:2;padding:13px;border-radius:10px;border:none;background:'+btnBg+';color:#fff;font-size:15px;font-weight:600">'+(saving?"Saving…":"Confirm check")+'</button></div></div></div>';
 }
 
-function buildToasts() {
-  if(!toasts.length) return "";
+function buildToasts(){
+  if(!toasts.length)return"";
   var cm={ok:"#f0fdf4|#166534|#bbf7d0",warn:"#fffbeb|#854d0e|#fde68a",danger:"#fff1f2|#991b1b|#fecdd3"};
   var html='<div style="padding:0 16px 8px">';
   for(var i=0;i<toasts.length;i++){var t=toasts[i],p=(cm[t.kind]||cm.ok).split("|");html+='<div style="background:'+p[0]+';border:1px solid '+p[2]+';color:'+p[1]+';border-radius:10px;padding:11px 14px;font-size:13px;font-weight:600;margin-bottom:6px">'+t.msg+'</div>';}
   return html+'</div>';
 }
 
-function render() {
-  var app=document.getElementById("app"); if(!app) return;
+function render(){
+  var app=document.getElementById("app");if(!app)return;
   var tabs2=["overview"].concat(SITES).concat(["history"]);
   var tlbls={overview:"Overview",history:"History",Fuji:"Fuji",Koi:"Koi",Bonsai:"Bonsai",Yuzu:"Yuzu"};
   var tabsHtml="";
   for(var i=0;i<tabs2.length;i++){
     var t=tabs2[i],act=(tab===t),c=SITE_CFG[t];
-    tabsHtml+='<button data-tab="'+t+'" style="padding:7px 13px;border-radius:20px;font-size:13px;font-weight:'+(act?600:400)+';border:'+(act?(c?'1.5px solid '+c.color:'1.5px solid #334155'):'1px solid #e2e8f0')+';background:'+(act?(c?c.bg:'#f1f5f9'):'#fff')+';color:'+(act?(c?c.color:'#1e293b'):'#64748b')+';white-space:nowrap;flex-shrink:0">'+tlbls[t]+'</button>';
+    tabsHtml+='<button data-tab="'+t+'" style="padding:7px 13px;border-radius:20px;font-size:13px;font-weight:'+(act?600:400)+';border:'+(act?(c?'2px solid '+c.color:'1.5px solid #334155'):'1px solid #e2e8f0')+';background:'+(act?(c?c.color:'#334155'):'#fff')+';color:'+(act?'#fff':'#64748b')+';white-space:nowrap;flex-shrink:0">'+tlbls[t]+'</button>';
   }
+
+  // Content area background changes per site
+  var contentBg="#f1f5f9";
+  if(SITES.indexOf(tab)>=0) contentBg=SITE_CFG[tab].pageBg;
+
   var dotCol=dbStatus==="online"?"#22c55e":dbStatus==="connecting"?"#f59e0b":"#ef4444";
   var dotTxt=dbStatus==="online"?"Live sync on":dbStatus==="connecting"?"Connecting…":"Sync offline";
   var connDot='<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:'+dotCol+';margin-right:5px"></span>';
   var notifBar=notifPerm!=="granted"?'<div id="notif-bar" style="background:#fef9c3;border:1px solid #fde68a;border-radius:10px;padding:8px 12px;font-size:12px;color:#854d0e;cursor:pointer;margin-bottom:10px;font-weight:500">Tap here to enable notifications for check reminders</div>':"";
   var offBanner=dbStatus==="offline"?'<div style="background:#fff1f2;border:1px solid #fecdd3;border-radius:10px;padding:8px 12px;font-size:12px;color:#991b1b;margin-bottom:10px;font-weight:500">⚠ No database connection. Retrying…</div>':"";
   var content=tab==="overview"?buildOverview():SITES.indexOf(tab)>=0?buildSite(tab):historyDay?buildHistoryDetail(historyDay):buildHistory();
+
   app.innerHTML=
     '<div style="background:#fff;border-bottom:1px solid #e2e8f0;padding:14px 16px 10px;position:sticky;top:0;z-index:50">'+
       '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px">'+
@@ -375,9 +346,10 @@ function render() {
       '</div>'+offBanner+notifBar+
       '<div class="scroll-x">'+tabsHtml+'</div>'+
     '</div>'+
-    '<div style="padding:16px">'+content+'</div>'+
+    '<div id="content-area" style="padding:16px;background:'+contentBg+';min-height:calc(100vh - 120px)">'+content+'</div>'+
     buildToasts()+buildModal();
 
+  // bind events
   var tabBtns=app.querySelectorAll("[data-tab]");
   for(var i=0;i<tabBtns.length;i++){(function(el){el.addEventListener("click",function(){tab=el.dataset.tab;historyDay=null;render();});})(tabBtns[i]);}
   var logBtns=app.querySelectorAll("[data-log]");
@@ -386,33 +358,26 @@ function render() {
   for(var i=0;i<siteBtns.length;i++){(function(el){el.addEventListener("click",function(){tab=el.dataset.gotosite;render();});})(siteBtns[i]);}
   var hdBtns=app.querySelectorAll("[data-histday]");
   for(var i=0;i<hdBtns.length;i++){(function(el){el.addEventListener("click",function(){historyDay=el.dataset.histday;render();});})(hdBtns[i]);}
-  var bb=document.getElementById("back-btn"); if(bb)bb.addEventListener("click",function(){historyDay=null;render();});
+  var bb=document.getElementById("back-btn");if(bb)bb.addEventListener("click",function(){historyDay=null;render();});
   var ni=document.getElementById("name-input");
   if(ni){ni.addEventListener("input",function(e){nameInput=e.target.value;var cb=document.getElementById("confirm-btn");if(cb)cb.style.background=nameInput.trim()?"#185FA5":"#94a3b8";});ni.addEventListener("keydown",function(e){if(e.key==="Enter")confirmLog();});}
-  var cfb=document.getElementById("confirm-btn"); if(cfb)cfb.addEventListener("click",confirmLog);
-  var ccb=document.getElementById("cancel-btn"); if(ccb)ccb.addEventListener("click",function(){modal=null;render();});
-  var ov=document.getElementById("overlay"); if(ov)ov.addEventListener("click",function(e){if(e.target===ov){modal=null;render();}});
-  var nb=document.getElementById("notif-bar"); if(nb)nb.addEventListener("click",function(){if(typeof Notification!=="undefined")Notification.requestPermission().then(function(p){notifPerm=p;render();});});
+  var cfb=document.getElementById("confirm-btn");if(cfb)cfb.addEventListener("click",confirmLog);
+  var ccb=document.getElementById("cancel-btn");if(ccb)ccb.addEventListener("click",function(){modal=null;render();});
+  var ov=document.getElementById("overlay");if(ov)ov.addEventListener("click",function(e){if(e.target===ov){modal=null;render();}});
+  var nb=document.getElementById("notif-bar");if(nb)nb.addEventListener("click",function(){if(typeof Notification!=="undefined")Notification.requestPermission().then(function(p){notifPerm=p;render();});});
 }
 
-function confirmLog() {
-  if(!modal||!nameInput.trim()||saving) return;
-  saving=true; render();
+function confirmLog(){
+  if(!modal||!nameInput.trim()||saving)return;
+  saving=true;render();
   var site=modal.site,type=modal.type,hr=modal.hr,ds=modal.ds;
   var entry={name:nameInput.trim(),loggedAt:new Date().toISOString()};
-  dbWrite(dbPath(ds,site,type,hr), entry)
-    .then(function(){
-      checks[ckKey(ds,site,type,hr)]=entry;
-      saveLastName(nameInput.trim()); lastName=nameInput.trim();
-      saving=false; modal=null; nameInput="";
-      render();
-      addToast(site+" — "+CHECK_CFG[type].label+" logged by "+entry.name,"ok",4000);
-    })
-    .catch(function(){
-      saving=false;
-      addToast("Could not save — check your connection","danger",6000);
-      render();
-    });
+  dbWrite(dbPath(ds,site,type,hr),entry).then(function(){
+    checks[ckKey(ds,site,type,hr)]=entry;
+    saveLastName(nameInput.trim());lastName=nameInput.trim();
+    saving=false;modal=null;nameInput="";render();
+    addToast(site+" — "+CHECK_CFG[type].label+" logged by "+entry.name,"ok",4000);
+  }).catch(function(){saving=false;addToast("Could not save — check your connection","danger",6000);render();});
 }
 
 function addToast(msg,kind,ms){if(!ms)ms=8000;var id=Date.now()+Math.random();toasts=toasts.slice(-2).concat([{id:id,msg:msg,kind:kind}]);render();setTimeout(function(){toasts=toasts.filter(function(t){return t.id!==id;});render();},ms);}
@@ -424,9 +389,8 @@ function checkAlerts(){
   if(m===15){for(var i=0;i<SITES.length;i++){var site=SITES[i],tk=Object.keys(SCH[site]);for(var j=0;j<tk.length;j++){var hrs=SCH[site][tk[j]];if(hrs.indexOf(h)>=0){var nk=nfKeyFn(ds,site,tk[j],h,"late"),ck=ckKey(ds,site,tk[j],h);if(notifiedArr.indexOf(nk)<0&&!checks[ck]){notifiedArr.push(nk);saveNotified(notifiedArr);push("Check missed!",site+" — "+CHECK_CFG[tk[j]].label+" at "+fmtH(h)+" was not completed","danger");}}}}}
 }
 
-// ── start ─────────────────────────────────────────────────────
-render();         // show UI immediately
-startPolling();   // load data from Firebase REST (no SDK needed)
+render();
+startPolling();
 setInterval(function(){now=new Date();checkAlerts();render();},60000);
 
 </script>
